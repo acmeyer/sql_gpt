@@ -16,54 +16,29 @@ def setup_prompt(engine):
     inspector = inspect(engine)
     database_info = ""
     for table_name in inspector.get_table_names():
-        database_info += f'{table_name}\n'
-        for column in inspector.get_columns(table_name):
-            database_info += f"\t {column['name']} ({column['type']})\n"
-    return f"""
-    Given an input question, respond with syntactically correct PostgreSQL. Be creative but the SQL must be correct.
+        column_names = [col['name'] for col in inspector.get_columns(table_name)]
+        columns = ", ".join(column_names)
+        database_info += f'* {table_name}: ({columns})\n'
 
-    You can use the following tables with the associated columns:
-    {database_info}
+    with open('sql_prompt.md') as f:
+        prompt = f.read()
+        prompt = prompt.replace("$database_info", database_info)
+        with open('sql_prompt_examples.md') as e:
+            examples = e.read()
+            prompt = prompt.replace("$examples", examples)
+    return prompt
 
-    Here are some examples:
-    Example 1:
-    ===========================================
-    Input:
-    how many new cases in the united states in the past week
-    Output:
-    SELECT SUM(new_cases) FROM data WHERE iso_code = 'USA' AND date > NOW() - INTERVAL '7 days';
+def ask_gpt3_code(prompt: str, stop: str = None, max_tokens: int = 256):
+    """Returns Codex GPT-3's response to the given prompt."""
+    response = openai.Completion.create(model="code-davinci-002",
+                                        prompt=prompt,
+                                        temperature=0.7,
+                                        max_tokens=max_tokens,
+                                        stop=stop)
+    print(f"\n[DEBUG] GPT response:\n{response}\n")
+    return response.choices[0].text.strip()
 
-    Example 2:
-    ===========================================
-    Input:
-    which country had the most new cases in the past week
-    Output:
-    SELECT location, SUM(new_cases) FROM data WHERE (date > NOW() - INTERVAL '7 days') and new_cases is not NULL GROUP BY location ORDER BY SUM(new_cases) DESC LIMIT 1;
-
-    Example 3:
-    ===========================================
-    Input:
-    which continent had the least new deaths in January of 2022
-    Output:
-    SELECT continent, sum(new_deaths)
-    FROM data
-    WHERE date BETWEEN '2022-01-01' AND '2022-01-31' and new_deaths is not NULL and continent is not NULL
-    GROUP BY continent
-    ORDER BY 2 ASC;
-
-    Example 4:
-    ===========================================
-    Input:
-    which continent had the most new deaths 2 weeks ago
-    Output:
-    SELECT continent, SUM(new_deaths) FROM data
-    WHERE date = (current_date - INTERVAL '2 weeks') AND new_deaths IS NOT NULL AND continent IS NOT NULL
-    GROUP BY 1 ORDER BY 2 DESC;
-
-    Begin.
-    """
-
-def ask_gpt3(prompt: str, stop: str = None, max_tokens: int = 256):
+def ask_gpt3_text(prompt: str, stop: str = None, max_tokens: int = 256):
     """Returns GPT-3's response to the given prompt."""
     response = openai.Completion.create(model="text-davinci-003",
                                         prompt=prompt,
@@ -89,56 +64,13 @@ def print_results(result: str) -> None:
     print(f"\n[DEBUG] Result:\n{result}\n")
 
 
-def read_query_results(question, query, results):
+def read_query_results(question, results):
     """Read the results from gpt-3 query."""
-    new_prompt = f"""
-    Given a question, a SQL query, and a table of the results, respond with a human readable response to the question.
-
-    Example 1:
-    ===========================================
-    Question:
-    how many new cases in the USA in the past week
-
-    Query:
-    SELECT SUM(new_cases) FROM data WHERE iso_code = 'USA' AND date > NOW() - INTERVAL '7 days';
-
-    Results:
-            sum
-    0  105599.0
-
-    Response: There have been 105,599 new cases in the USA in the past week.
-    ===========================================
-
-    Example 2:
-    ===========================================
-    Question:
-    how many deaths in the USA in the last week
-
-    Query:
-    SELECT SUM(new_deaths) FROM data WHERE iso_code = 'USA' AND date > NOW() - INTERVAL '1 week';
-
-    Results:
-        sum
-    0  548.0
-
-    Response: 548 deaths in the last week
-    ===========================================
-
-    Begin.
-
-    Question:
-    {question}
-
-    Query:
-    {query}
-
-    Results:
-    {results}
-
-    Response:
-    ```
-    """
-    return ask_gpt3(new_prompt, stop="```")
+    with open('results_prompt.md') as f:
+        new_prompt = f.read()
+        new_prompt = new_prompt.replace("$question", question)
+        new_prompt = new_prompt.replace("$results", results.to_string())
+    return ask_gpt3_text(new_prompt, stop="```")
 
 def create_db_connection():
     """Creates a connection to the database."""
@@ -162,11 +94,11 @@ if __name__ == "__main__":
         try:
             prompt = setup_prompt(connection.engine)
             prompt = f'{prompt}\nInput:\n{task}\nOutput:\n```sql'
-            code = ask_gpt3(prompt, stop='```', max_tokens=512)
+            code = ask_gpt3_code(prompt, stop='```', max_tokens=512)
             print_generated_code(code)
             result = execute_code(code, connection)
             print_results(result)
-            answer = read_query_results(task, code, result)
+            answer = read_query_results(task, result)
             print(f"\nANSWER: {answer}")
         except Exception as e:
             print(f"ERROR: {e}")
